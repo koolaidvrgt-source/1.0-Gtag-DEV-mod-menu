@@ -1,0 +1,249 @@
+# 1.0 GTAG Dev Mod Menu
+use at risk! Made by me
+
+using BepInEx;
+using BepInEx.Configuration;
+using HarmonyLib;
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+using Utilla;
+using Photon.Pun;
+using GorillaLocomotion;
+
+namespace GTAGDevModMenu
+{
+    [BepInPlugin("com.gtagdev.gorillatag.modmenu", "The GTAGDev Mod Menu 1.0", "1.0.0")]
+    [BepInDependency("org.legoandmars.gorillatag.utilla", "1.5.0")]
+    public class GTAGDevModMenu : BaseUnityPlugin
+    {
+        private bool menuVisible = false;
+        private GameObject menuCanvas;
+        private Transform modListContent;
+        private bool[] modEquipped = new bool[5];  // 0: Fly Gun, 1: Tag Gun, 2: NoClip, 3: Slippery Walk, 4: Kick Gun
+        private float[] lastPressTime = new float[5];  // For double press detection
+        private GameObject sphereCursor;  // White sphere for aiming (Tag/Kick Gun)
+        private GameObject iceBlockPrefab;  // For slippery walk
+
+        void Awake()
+        {
+            new Harmony("gtagdev.modmenu").PatchAll();
+        }
+
+        void Start()
+        {
+            CreateMenu();
+            CreateSphereCursor();
+            CreateIceBlockPrefab();
+            if (InputManager.Instance) InputManager.Instance.OnChestBang += ToggleMenu;
+        }
+
+        void CreateMenu()
+        {
+            menuCanvas = new GameObject("GTAGDevModMenu");
+            var canvas = menuCanvas.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.WorldSpace;
+            canvas.worldCamera = Camera.main;
+            menuCanvas.transform.position = new Vector3(0, 1.5f, 2);
+            menuCanvas.transform.localScale = Vector3.one * 0.01f;
+            menuCanvas.SetActive(false);
+
+            // Dark theme panel
+            var panel = new GameObject("Panel").AddComponent<Image>();
+            panel.transform.SetParent(menuCanvas.transform);
+            panel.color = new Color(0.1f, 0.1f, 0.1f, 0.9f);  // Dark background
+            panel.rectTransform.sizeDelta = new Vector2(500, 400);
+
+            // Title
+            var title = new GameObject("Title").AddComponent<TextMeshProUGUI>();
+            title.transform.SetParent(panel.transform);
+            title.text = "The GTAGDev Mod Menu 1.0\nthis is up to date!";
+            title.fontSize = 30;
+            title.color = Color.cyan;
+            title.alignment = TextAlignmentOptions.Center;
+            title.rectTransform.sizeDelta = new Vector2(480, 80);
+            title.rectTransform.anchoredPosition = new Vector2(0, 160);
+
+            // ScrollView for mods
+            var scrollView = new GameObject("ScrollView").AddComponent<ScrollRect>();
+            scrollView.transform.SetParent(panel.transform);
+            scrollView.rectTransform.sizeDelta = new Vector2(480, 280);
+            scrollView.rectTransform.anchoredPosition = new Vector2(0, -20);
+            var viewport = new GameObject("Viewport").AddComponent<RectTransform>();
+            viewport.SetParent(scrollView.transform);
+            modListContent = new GameObject("Content").AddComponent<RectTransform>();
+            modListContent.SetParent(viewport.transform);
+            var layout = modListContent.gameObject.AddComponent<VerticalLayoutGroup>();
+            layout.spacing = 10;
+
+            // Add mod buttons
+            string[] modNames = { "Fly Gun", "Tag Gun", "NoClip", "Slippery Walk", "Kick Gun" };
+            for (int i = 0; i < 5; i++)
+            {
+                int index = i;
+                var btn = CreateButton(modNames[i], modListContent, Vector2.zero);
+                btn.onClick.AddListener(() => ToggleMod(index));
+            }
+        }
+
+        Button CreateButton(string text, Transform parent, Vector2 pos)
+        {
+            var btnObj = new GameObject(text);
+            var btn = btnObj.AddComponent<Button>();
+            btn.transform.SetParent(parent);
+            var btnText = new GameObject("Text").AddComponent<TextMeshProUGUI>();
+            btnText.transform.SetParent(btn.transform);
+            btnText.text = text;
+            btnText.alignment = TextAlignmentOptions.Center;
+            btnText.color = Color.white;
+            btn.targetGraphic = btnObj.AddComponent<Image>();
+            btn.targetGraphic.color = new Color(0.2f, 0.2f, 0.2f, 1f);  // Dark button
+            var rect = btn.GetComponent<RectTransform>();
+            rect.sizeDelta = new Vector2(460, 50);
+            rect.anchoredPosition = pos;
+            return btn;
+        }
+
+        void ToggleMenu()
+        {
+            menuVisible = !menuVisible;
+            menuCanvas.SetActive(menuVisible);
+        }
+
+        void ToggleMod(int modIndex)
+        {
+            float currentTime = Time.time;
+            if (currentTime - lastPressTime[modIndex] < 0.5f)  // Double press within 0.5s
+            {
+                modEquipped[modIndex] = !modEquipped[modIndex];
+                Debug.Log(modNames[modIndex] + " toggled: " + modEquipped[modIndex]);
+            }
+            lastPressTime[modIndex] = currentTime;
+        }
+
+        private string[] modNames = { "Fly Gun", "Tag Gun", "NoClip", "Slippery Walk", "Kick Gun" };
+
+        void Update()
+        {
+            // Common: Sphere cursor for Tag/Kick Gun
+            if (modEquipped[1] || modEquipped[4])
+            {
+                sphereCursor.SetActive(true);
+                // Aim with right hand (assume right controller)
+                sphereCursor.transform.position = GorillaTagger.Instance.rightHandTransform.position + GorillaTagger.Instance.rightHandTransform.forward * 1f;  // 1m ahead
+            }
+            else
+            {
+                sphereCursor.SetActive(false);
+            }
+
+            // 1. Fly Gun
+            if (modEquipped[0])
+            {
+                if (OVRInput.Get(OVRInput.Button.Two, OVRInput.Controller.RTouch))  // Hold B on right controller
+                {
+                    Vector3 flyDirection = GorillaTagger.Instance.rightHandTransform.forward;
+                    GorillaTagger.Instance.bodyCollider.attachedRigidbody.AddForce(flyDirection * 20f, ForceMode.VelocityChange);  // Fly speed
+                }
+            }
+
+            // 2. Tag Gun
+            if (modEquipped[1])
+            {
+                // Check if in infection and tagged
+                if (GorillaTagManager.instance.currentMode == GorillaTagManager.GameMode.INFECTION && GorillaTagger.Instance.IsTagged)
+                {
+                    if (OVRInput.GetDown(OVRInput.Button.PrimaryIndexTrigger, OVRInput.Controller.RTouch))  // Trigger press
+                    {
+                        Ray ray = new Ray(GorillaTagger.Instance.rightHandTransform.position, GorillaTagger.Instance.rightHandTransform.forward);
+                        if (Physics.Raycast(ray, out RaycastHit hit, 100f))
+                        {
+                            var hitPlayer = hit.collider.GetComponent<GorillaPlayer>();
+                            if (hitPlayer && !hitPlayer.IsTagged)
+                            {
+                                // Invisible tag via RPC (sim - use Photon to transfer tag)
+                                object[] tagData = { hitPlayer.PlayerId };
+                                PhotonNetwork.RaiseEvent(3, tagData, new RaiseEventOptions { Receivers = ReceiverGroup.All }, SendOptions.SendReliable);  // Custom event for tag
+                                Debug.Log("Tagged " + hitPlayer.PlayerName);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. NoClip
+            if (modEquipped[2])
+            {
+                GorillaTagger.Instance.bodyCollider.enabled = false;  // Disable collision
+            }
+            else
+            {
+                GorillaTagger.Instance.bodyCollider.enabled = true;
+            }
+
+            // 4. Slippery Walk
+            if (modEquipped[3])
+            {
+                // Spawn invisible ice block under feet
+                Vector3 leftFoot = GorillaTagger.Instance.leftFootCollider.transform.position;
+                Vector3 rightFoot = GorillaTagger.Instance.rightFootCollider.transform.position;
+                SpawnIceBlock(leftFoot - Vector3.up * 0.1f);
+                SpawnIceBlock(rightFoot - Vector3.up * 0.1f);
+            }
+
+            // 5. Kick Gun
+            if (modEquipped[4])
+            {
+                if (OVRInput.GetDown(OVRInput.Button.PrimaryIndexTrigger, OVRInput.Controller.RTouch))
+                {
+                    Ray ray = new Ray(GorillaTagger.Instance.rightHandTransform.position, GorillaTagger.Instance.rightHandTransform.forward);
+                    if (Physics.Raycast(ray, out RaycastHit hit, 100f))
+                    {
+                        var hitPlayer = hit.collider.GetComponent<GorillaPlayer>();
+                        if (hitPlayer)
+                        {
+                            // Disconnect via Photon RPC (kick from lobby)
+                            Utilla.UtillaManager.Instance.KickPlayer(hitPlayer.PlayerId, "Kicked by GTAGDev", false);
+                            PhotonNetwork.RaiseEvent(4, hitPlayer.PlayerId, new RaiseEventOptions { TargetActors = new int[] { (int)hitPlayer.PlayerId } }, SendOptions.SendReliable);  // Disconnect event
+                            Debug.Log("Kicked " + hitPlayer.PlayerName);
+                        }
+                    }
+                }
+            }
+        }
+
+        void CreateSphereCursor()
+        {
+            sphereCursor = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            sphereCursor.transform.localScale = Vector3.one * 0.1f;
+            sphereCursor.GetComponent<Renderer>().material.color = Color.white;
+            sphereCursor.SetActive(false);
+            DontDestroyOnLoad(sphereCursor);
+        }
+
+        void CreateIceBlockPrefab()
+        {
+            iceBlockPrefab = new GameObject("IceBlock");
+            var box = iceBlockPrefab.AddComponent<BoxCollider>();
+            box.size = new Vector3(1f, 0.1f, 1f);
+            box.material = new PhysicMaterial { dynamicFriction = 0f, staticFriction = 0f, bounciness = 0f };  // Slippery material
+            iceBlockPrefab.GetComponent<Renderer>().enabled = false;  // Invisible
+            DontDestroyOnLoad(iceBlockPrefab);
+            iceBlockPrefab.SetActive(false);
+        }
+
+        void SpawnIceBlock(Vector3 position)
+        {
+            var ice = Instantiate(iceBlockPrefab, position, Quaternion.identity);
+            ice.SetActive(true);
+            Destroy(ice, 1f);  // Temp block
+        }
+
+        [HarmonyPatch(typeof(GorillaTagManager), "OnPlayerJoined")]
+        [HarmonyPostfix]
+        static void OnPlayerJoinedPostfix(GorillaPlayer ___player)
+        {
+            Debug.Log("Monke joined: " + ___player.playerName);
+        }
+    }
+}
